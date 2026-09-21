@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="A tiny interactive jellyfish tank. Tap the water to feed them.">
+<title>Pocket Jellyfish</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M6 17a10 10 0 0 1 20 0z' fill='%23ffb3e6'/%3E%3Cpath d='M10 18c0 5-2 6-2 9M16 18c0 5 1 6 1 9M22 18c0 5 2 6 2 9' stroke='%23ffd6f2' stroke-width='2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+  :root{
+    --ink: #f4eaff;
+    --panel: rgba(20, 16, 44, 0.44);
+    --edge: rgba(255,255,255,0.18);
+  }
+  *{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body{
+    margin:0; padding:0; height:100%; width:100%;
+    overflow:hidden; background:#04010f; color:var(--ink);
+    font-family: ui-rounded, "SF Pro Rounded", "Nunito", "Quicksand", system-ui, -apple-system, "Segoe UI", sans-serif;
+    overscroll-behavior:none;
+  }
+  canvas#tank{
+    position:fixed; inset:0; display:block; touch-action:none; cursor:crosshair;
+  }
+
+  .badge{
+    position:fixed; top:max(14px, env(safe-area-inset-top)); left:14px;
+    display:flex; align-items:center; gap:10px;
+    padding:9px 15px 9px 12px;
+    background:var(--panel); border:1px solid var(--edge);
+    border-radius:999px; backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+    box-shadow:0 8px 28px rgba(0,0,0,.35);
+    user-select:none; pointer-events:none;
+  }
+  .badge svg{ width:22px; height:22px; flex:none; }
+  .badge .title{ font-weight:700; font-size:15px; letter-spacing:.2px; }
+  .badge .sub{ font-size:12px; opacity:.72; margin-top:1px; }
+
+  .dock{
+    position:fixed; left:50%; transform:translateX(-50%);
+    bottom:max(16px, env(safe-area-inset-bottom));
+    display:flex; gap:7px; flex-wrap:wrap; justify-content:center;
+    padding:8px; max-width:calc(100vw - 20px);
+    background:var(--panel); border:1px solid var(--edge);
+    border-radius:20px; backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+    box-shadow:0 10px 34px rgba(0,0,0,.4);
+  }
+  button{
+    font:inherit; font-size:13.5px; font-weight:650; color:var(--ink);
+    background:rgba(255,255,255,.09); border:1px solid rgba(255,255,255,.16);
+    padding:9px 15px; border-radius:14px; cursor:pointer;
+    transition:transform .12s ease, background .18s ease, box-shadow .18s ease;
+    white-space:nowrap;
+  }
+  button:hover{ background:rgba(255,255,255,.17); }
+  button:active{ transform:scale(.94); }
+  button.on{ background:rgba(255,214,242,.24); border-color:rgba(255,214,242,.5); box-shadow:0 0 16px rgba(255,170,230,.28) inset; }
+
+  .hint{
+    position:fixed; left:50%; top:50%; transform:translate(-50%,-50%);
+    font-size:16px; font-weight:650; letter-spacing:.3px;
+    padding:12px 22px; border-radius:999px;
+    background:rgba(18,14,40,.4); border:1px solid var(--edge);
+    backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);
+    pointer-events:none; opacity:1; transition:opacity .7s ease;
+    animation:bob 3.2s ease-in-out infinite;
+  }
+  .hint.gone{ opacity:0; }
+  @keyframes bob{ 0%,100%{ margin-top:0 } 50%{ margin-top:-8px } }
+
+  @media (max-width:520px){
+    .badge .sub{ display:none; }
+    button{ padding:8px 12px; font-size:12.5px; }
+  }
+  @media (prefers-reduced-motion: reduce){
+    .hint{ animation:none; }
+  }
+</style>
+</head>
+<body>
+
+<canvas id="tank"></canvas>
+
+<div class="badge">
+  <svg viewBox="0 0 32 32" aria-hidden="true">
+    <path d="M6 17a10 10 0 0 1 20 0z" fill="#ffb3e6"/>
+    <path d="M10 18c0 5-2 6-2 9M16 18c0 5 1 6 1 9M22 18c0 5 2 6 2 9" stroke="#ffd6f2" stroke-width="2" fill="none" stroke-linecap="round"/>
+  </svg>
+  <div>
+    <div class="title">Pocket Jellyfish</div>
+    <div class="sub" id="stat">6 jellies &middot; 0 snacks</div>
+  </div>
+</div>
+
+<div class="hint" id="hint">tap the water to feed them</div>
+
+<div class="dock">
+  <button id="addBtn">+ jelly</button>
+  <button id="feedBtn">sprinkle snacks</button>
+  <button id="nightBtn">night light</button>
+  <button id="soundBtn" class="on">sound: on</button>
+  <button id="resetBtn">reset tank</button>
+</div>
+
+<script>
+(function(){
+'use strict';
+
+/* ───────────────────────── setup ───────────────────────── */
+
+const canvas = document.getElementById('tank');
+const ctx = canvas.getContext('2d');
+const statEl = document.getElementById('stat');
+const hintEl = document.getElementById('hint');
+
+const TAU = Math.PI * 2;
+const rand = (a, b) => a + Math.random() * (b - a);
+const pick = a => a[(Math.random() * a.length) | 0];
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+
+const HUES = [332, 308, 272, 224, 196, 162, 44, 14];
+const MAX_JELLIES = 26;
+
+let W = 0, H = 0, DPR = 1;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width  = Math.floor(W * DPR);
+  canvas.height = Math.floor(H * DPR);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+resize();
+window.addEventListener('resize', resize);
+
+let jellies = [], foods = [], sparks = [], bubbles = [], motes = [];
+let night = false, muted = false, snacks = 0, hinted = false;
+
+/* ───────────────────────── sound ───────────────────────── */
+
+let actx = null;
+function audio(){
+  if (muted) return null;
+  if (!actx){
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    try { actx = new AC(); } catch(e){ return null; }
+  }
+  if (actx.state === 'suspended') actx.resume();
+  return actx;
+}
+function tone(freq, dur, vol, delay, type){
+  const a = audio(); if (!a) return;
+  const t0 = a.currentTime + (delay || 0);
+  const o = a.createOscillator(), g = a.createGain();
+  o.type = type || 'sine';
+  o.frequency.setValueAtTime(freq, t0);
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(vol, t0 + 0.015);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  o.connect(g); g.connect(a.destination);
+  o.start(t0); o.stop(t0 + dur + 0.05);
+}
+const SCALE = [392, 440, 523.25, 587.33, 659.25, 783.99, 880, 1046.5];
+function chime(){
+  const f = pick(SCALE);
+  tone(f, 0.75, 0.085);
+  tone(f * 2, 0.40, 0.028, 0.02);
+}
+function plip(){
+  const a = audio(); if (!a) return;
+  const t0 = a.currentTime;
+  const o = a.createOscillator(), g = a.createGain();
+  o.type = 'sine';
+  o.frequency.setValueAtTime(900, t0);
+  o.frequency.exponentialRampToValueAtTime(230, t0 + 0.13);
+  g.gain.setValueAtTime(0.07, t0);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.17);
+  o.connect(g); g.connect(a.destination);
+  o.start(t0); o.stop(t0 + 0.2);
+}
+
+/* ───────────────────────── critters ───────────────────────── */
+
+function burst(x, y, hue, n){
+  n = n || 12;
+  for (let i = 0; i < n; i++){
+    const a = rand(0, TAU), s = rand(20, 95);
+    sparks.push({
+      x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+      life: rand(.5, 1.1), max: 1.1, r: rand(1.2, 3), hue: hue + rand(-14, 14)
+    });
+  }
+}
+
+class Food {
+  constructor(x, y){
+    this.x = x; this.y = y;
+    this.vx = rand(-8, 8); this.vy = rand(14, 26);
+    this.r = rand(2.8, 4.4);
+    this.hue = rand(38, 68);
+    this.t = rand(0, TAU);
+    this.life = 16;
+    this.dead = false;
+  }
+  update(dt){
+    this.t += dt * 3;
+    this.x += (this.vx + Math.sin(this.t) * 10) * dt;
+    this.y += this.vy * dt;
+    this.life -= dt;
+    if (this.life <= 0 || this.y > H + 24) this.dead = true;
+  }
+  draw(){
+    const pulse = 1 + Math.sin(this.t * 2) * 0.18;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const g = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, this.r * 6 * pulse);
+    g.addColorStop(0, `hsla(${this.hue},100%,88%,.95)`);
+    g.addColorStop(.35, `hsla(${this.hue},100%,70%,.35)`);
+    g.addColorStop(1, `hsla(${this.hue},100%,60%,0)`);
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(this.x, this.y, this.r * 6 * pulse, 0, TAU); ctx.fill();
+    ctx.fillStyle = `hsla(${this.hue},100%,94%,.95)`;
+    ctx.beginPath(); ctx.arc(this.x, this.y, this.r * pulse * .55, 0, TAU); ctx.fill();
+    ctx.restore();
+  }
+}
+
+class Jelly {
+  constructor(x, y, size, hue){
+    this.x = x; this.y = y;
+    this.vx = rand(-8, 8); this.vy = rand(-8, 8);
+    this.size = size || rand(16, 24);
+    this.base = clamp(this.size, 15, 24);
+    this.hue = (hue == null) ? pick(HUES) : ((hue % 360) + 360) % 360;
+    this.phase = rand(0, TAU);
+    this.rate = rand(1.35, 2.05);
+    this.dir = rand(0, TAU);
+    this.turn = 0;
+    this.strands = 5 + ((Math.random() * 3) | 0);
+    this.seed = rand(0, 100);
+    this.wob = rand(0, TAU);
+    this.blinkIn = rand(1.5, 6);
+    this.blinking = 0;
+    this.happy = 0;
+    this.spine = [];
+    for (let i = 0; i < 15; i++) this.spine.push({ x, y: y + i * 4 });
+  }
+
+  update(dt, t){
+    /* --- pick a heading --- */
+    let target = null, bd = Infinity;
+    for (const f of foods){
+      if (f.dead) continue;
+      const dx = f.x - this.x, dy = f.y - this.y, d = dx*dx + dy*dy;
+      if (d < bd){ bd = d; target = f; }
+    }
+
+    let desired = null, urgency = 1.2, boost = 1;
+    if (target && bd < 340 * 340){
+      desired = Math.atan2(target.y - this.y, target.x - this.x);
+      urgency = 2.6; boost = 1.75;
+    }
+
+    const m = 90;
+    let ax = 0, ay = 0;
+    if (this.x < m)      ax += (m - this.x) / m;
+    if (this.x > W - m)  ax -= (m - (W - this.x)) / m;
+    if (this.y < m)      ay += (m - this.y) / m;
+    if (this.y > H - m)  ay -= (m - (H - this.y)) / m;
+    if (Math.abs(ax) > .05 || Math.abs(ay) > .05){
+      desired = Math.atan2(ay, ax);
+      urgency = 3;
+    }
+
+    if (desired != null){
+      let diff = ((desired - this.dir + Math.PI * 3) % TAU) - Math.PI;
+      this.dir += diff * Math.min(1, urgency * dt);
+    } else {
+      this.turn += rand(-1, 1) * dt * 3.2;
+      this.turn *= Math.pow(0.05, dt);
+      this.dir += this.turn * dt;
+    }
+
+    /* --- pulse & drift --- */
+    this.phase += this.rate * boost * dt;
+    const thrust = Math.max(0, Math.sin(this.phase));
+    const acc = thrust * thrust * (150 + this.size * 2.4) * boost;
+    this.vx += Math.cos(this.dir) * acc * dt;
+    this.vy += Math.sin(this.dir) * acc * dt;
+    this.vy += 11 * dt;                       // a lazy sink between pulses
+    const damp = Math.pow(0.11, dt);
+    this.vx *= damp; this.vy *= damp;
+
+    this.x += this.vx * dt;
+    this.y += this.vy * dt;
+    this.x = clamp(this.x, 8, Math.max(9, W - 8));
+    this.y = clamp(this.y, 8, Math.max(9, H - 8));
+
+    /* --- rope of tentacles follows the bell --- */
+    const L = this.size * 0.33;
+    const sp = this.spine;
+    sp[0].x = this.x; sp[0].y = this.y;
+    for (let i = 1; i < sp.length; i++){
+      const p = sp[i-1], c = sp[i];
+      let dx = c.x - p.x, dy = c.y - p.y + 46 * dt;
+      const d = Math.hypot(dx, dy) || 1;
+      c.x = p.x + dx / d * L;
+      c.y = p.y + dy / d * L;
+    }
+
+    /* --- snack time --- */
+    if (target && Math.sqrt(bd) < this.size * 1.05 + target.r){
+      target.dead = true;
+      snacks++;
+      this.size = Math.min(this.size + 2.4, 46);
+      this.happy = 1.6;
+      burst(target.x, target.y, this.hue, 14);
+      chime();
+    }
+
+    /* --- upkeep --- */
+    this.size += (this.base - this.size) * 0.07 * dt;
+    this.wob += dt * 2.1;
+    this.happy = Math.max(0, this.happy - dt);
+    this.blinkIn -= dt;
+    if (this.blinkIn <= 0){ this.blinking = 0.13; this.blinkIn = rand(2.5, 7.5); }
+    if (this.blinking > 0) this.blinking -= dt;
+  }
+
+  draw(t){
+    const r = this.size, sp = this.spine, n = sp.length;
+    const glow = night ? 1 : 0.72;
+
+    /* per-segment perpendiculars */
+    const nx = [], ny = [];
+    for (let i = 0; i < n; i++){
+      const a = sp[Math.max(0, i - 1)], b = sp[Math.min(n - 1, i + 1)];
+      let dx = b.x - a.x, dy = b.y - a.y;
+      const d = Math.hypot(dx, dy) || 1;
+      nx[i] = -dy / d; ny[i] = dx / d;
+    }
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    /* thick oral arms */
+    ctx.strokeStyle = `hsla(${this.hue},95%,80%,${0.20 * glow})`;
+    ctx.lineWidth = Math.max(1.5, r * 0.22);
+    for (let s = 0; s < 4; s++){
+      const off = ((s / 3) - 0.5) * r * 0.75;
+      ctx.beginPath();
+      const last = Math.min(n, 9);
+      for (let i = 0; i < last; i++){
+        const u = i / (last - 1);
+        const sway = Math.sin(i * 0.55 + t * 1.9 + s * 1.6 + this.seed) * r * 0.16 * u;
+        const o = off * (1 - 0.45 * u) + sway;
+        const px = sp[i].x + nx[i] * o, py = sp[i].y + ny[i] * o;
+        i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+      }
+      ctx.stroke();
+    }
+
+    /* fine tentacles */
+    ctx.lineWidth = Math.max(1, r * 0.075);
+    ctx.strokeStyle = `hsla(${this.hue},100%,84%,${0.32 * glow})`;
+    for (let s = 0; s < this.strands; s++){
+      const off = ((s / (this.strands - 1)) - 0.5) * r * 1.25;
+      ctx.beginPath();
+      for (let i = 0; i < n; i++){
+        const u = i / (n - 1);
+        const sway = Math.sin(i * 0.44 + t * 2.5 + s * 1.15 + this.seed) * r * 0.26 * u;
+        const o = off * (1 - 0.3 * u) + sway;
+        const px = sp[i].x + nx[i] * o, py = sp[i].y + ny[i] * o;
+        i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    /* bell */
+    const ang = Math.atan2(sp[0].y - sp[1].y, sp[0].x - sp[1].x);
+    const pulse = Math.sin(this.phase);
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.rotate(ang + Math.PI / 2);
+
+    ctx.save();
+    ctx.scale(1 + pulse * 0.16, 1 - pulse * 0.13);
+    ctx.beginPath();
+    ctx.moveTo(-r, 0);
+    ctx.bezierCurveTo(-r * 1.06, -r * 1.58, r * 1.06, -r * 1.58, r, 0);
+    const steps = 26;
+    for (let i = 1; i <= steps; i++){
+      const u = i / steps;
+      const xx = r - 2 * r * u;
+      const yy = Math.sin(u * Math.PI * 4 + this.wob) * r * 0.11 * Math.sin(u * Math.PI);
+      ctx.lineTo(xx, yy);
+    }
+    ctx.closePath();
+
+    const g = ctx.createRadialGradient(0, -r * 0.75, r * 0.08, 0, -r * 0.45, r * 1.5);
+    g.addColorStop(0,   `hsla(${this.hue},100%,90%,.88)`);
+    g.addColorStop(.5,  `hsla(${this.hue},95%,73%,.48)`);
+    g.addColorStop(1,   `hsla(${this.hue},90%,62%,.10)`);
+    ctx.shadowColor = `hsla(${this.hue},100%,72%,${night ? .95 : .6})`;
+    ctx.shadowBlur = r * (night ? 1.8 : 1.1);
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = `hsla(${this.hue},100%,92%,.45)`;
+    ctx.lineWidth = Math.max(1, r * 0.05);
+    ctx.stroke();
+
+    /* inner shimmer */
+    ctx.strokeStyle = `hsla(${this.hue},100%,96%,.28)`;
+    ctx.lineWidth = Math.max(1, r * 0.04);
+    ctx.beginPath(); ctx.arc(0, -r * 0.62, r * 0.55, Math.PI * 1.15, Math.PI * 1.85); ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, -r * 0.55, r * 0.30, Math.PI * 1.1,  Math.PI * 1.9);  ctx.stroke();
+    ctx.restore();
+
+    /* face */
+    const ey = -r * 0.34, ex = r * 0.30;
+    ctx.fillStyle = 'rgba(38,26,62,.76)';
+    if (this.blinking > 0){
+      ctx.strokeStyle = 'rgba(38,26,62,.76)';
+      ctx.lineWidth = Math.max(1.2, r * 0.07);
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(-ex - r * .09, ey); ctx.lineTo(-ex + r * .09, ey);
+      ctx.moveTo( ex - r * .09, ey); ctx.lineTo( ex + r * .09, ey);
+      ctx.stroke();
+    } else {
+      ctx.beginPath(); ctx.ellipse(-ex, ey, r * .075, r * .10, 0, 0, TAU); ctx.fill();
+      ctx.beginPath(); ctx.ellipse( ex, ey, r * .075, r * .10, 0, 0, TAU); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,.85)';
+      ctx.beginPath(); ctx.arc(-ex + r * .032, ey - r * .042, r * .028, 0, TAU); ctx.fill();
+      ctx.beginPath(); ctx.arc( ex + r * .032, ey - r * .042, r * .028, 0, TAU); ctx.fill();
+    }
+    ctx.fillStyle = `hsla(${this.hue},95%,70%,.38)`;
+    ctx.beginPath(); ctx.ellipse(-ex * 1.6, ey + r * .17, r * .11, r * .065, 0, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.ellipse( ex * 1.6, ey + r * .17, r * .11, r * .065, 0, 0, TAU); ctx.fill();
+
+    ctx.strokeStyle = 'rgba(38,26,62,.6)';
+    ctx.lineWidth = Math.max(1, r * 0.048);
+    ctx.beginPath();
+    if (this.happy > 0){
+      const my = ey + r * .20, mw = r * .14;
+      ctx.moveTo(-mw, my);
+      ctx.quadraticCurveTo(-mw * .5, my + r * .10, 0, my);
+      ctx.quadraticCurveTo( mw * .5, my + r * .10, mw, my);
+    } else {
+      ctx.arc(0, ey + r * .12, r * .10, Math.PI * .22, Math.PI * .78);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+/* ───────────────────────── scenery ───────────────────────── */
+
+function seedScenery(){
+  bubbles = [];
+  for (let i = 0; i < 26; i++)
+    bubbles.push({ x: rand(0, W), y: rand(0, H), r: rand(1.2, 4.5), vy: rand(16, 46), p: rand(0, TAU) });
+  motes = [];
+  for (let i = 0; i < 70; i++)
+    motes.push({ x: rand(0, W), y: rand(0, H), r: rand(.5, 1.7), vx: rand(-5, 5), vy: rand(-7, 7), a: rand(.12, .45) });
+}
+
+function drawBackdrop(t){
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  if (night){
+    g.addColorStop(0, '#120a33'); g.addColorStop(.55, '#0a0524'); g.addColorStop(1, '#03010d');
+  } else {
+    g.addColorStop(0, '#12506b'); g.addColorStop(.5, '#0b2a48'); g.addColorStop(1, '#050f25');
+  }
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 5; i++){
+    const x = W * (i + .5) / 5 + Math.sin(t * .16 + i * 1.7) * 70;
+    const w = 60 + Math.sin(t * .27 + i * 2.3) * 26;
+    const rg = ctx.createLinearGradient(0, 0, 0, H * .95);
+    rg.addColorStop(0, night ? 'rgba(168,130,255,.075)' : 'rgba(150,225,255,.095)');
+    rg.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = rg;
+    ctx.beginPath();
+    ctx.moveTo(x - w * .28, -10);
+    ctx.lineTo(x + w * .28, -10);
+    ctx.lineTo(x + w * 1.25, H);
+    ctx.lineTo(x - w * 1.0,  H);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawVignette(){
+  const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * .32, W / 2, H / 2, Math.max(W, H) * .78);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, night ? 'rgba(0,0,0,.55)' : 'rgba(0,0,0,.45)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+}
+
+/* ───────────────────────── interaction ───────────────────────── */
+
+function feedAt(x, y, n){
+  n = n || 1;
+  for (let i = 0; i < n; i++) foods.push(new Food(x + rand(-14, 14), y + rand(-10, 10)));
+  if (foods.length > 90) foods.splice(0, foods.length - 90);
+  plip();
+  if (!hinted){ hinted = true; hintEl.classList.add('gone'); }
+}
+
+function addJelly(x, y){
+  if (jellies.length >= MAX_JELLIES) return;
+  const jx = x == null ? rand(W * .15, W * .85) : x;
+  const jy = y == null ? rand(H * .2, H * .8) : y;
+  const j = new Jelly(jx, jy);
+  jellies.push(j);
+  burst(jx, jy, j.hue, 16);
+  tone(pick(SCALE), .5, .07);
+  updateStat();
+}
+
+function resetTank(){
+  jellies = []; foods = []; sparks = [];
+  for (let i = 0; i < 6; i++) jellies.push(new Jelly(rand(W * .15, W * .85), rand(H * .2, H * .8)));
+  seedScenery();
+  snacks = 0;
+  updateStat();
+}
+
+function updateStat(){
+  statEl.textContent = jellies.length + (jellies.length === 1 ? ' jelly' : ' jellies') +
+                       ' · ' + snacks + (snacks === 1 ? ' snack' : ' snacks');
+}
+
+let dragging = false, lastDrop = 0;
+canvas.addEventListener('pointerdown', e => {
+  dragging = true;
+  canvas.setPointerCapture(e.pointerId);
+  feedAt(e.clientX, e.clientY, 2);
+  lastDrop = performance.now();
+});
+canvas.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  const now = performance.now();
+  if (now - lastDrop > 110){ feedAt(e.clientX, e.clientY, 1); lastDrop = now; }
+});
+const endDrag = () => { dragging = false; };
+canvas.addEventListener('pointerup', endDrag);
+canvas.addEventListener('pointercancel', endDrag);
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+document.getElementById('addBtn').onclick = () => addJelly();
+document.getElementById('feedBtn').onclick = () => {
+  for (let i = 0; i < 14; i++) foods.push(new Food(rand(W * .1, W * .9), rand(-40, H * .25)));
+  plip();
+  if (!hinted){ hinted = true; hintEl.classList.add('gone'); }
+};
+const nightBtn = document.getElementById('nightBtn');
+nightBtn.onclick = () => {
+  night = !night;
+  nightBtn.classList.toggle('on', night);
+  nightBtn.textContent = night ? 'daylight' : 'night light';
+};
+const soundBtn = document.getElementById('soundBtn');
+soundBtn.onclick = () => {
+  muted = !muted;
+  soundBtn.classList.toggle('on', !muted);
+  soundBtn.textContent = muted ? 'sound: off' : 'sound: on';
+  if (!muted) tone(660, .3, .06);
+};
+document.getElementById('resetBtn').onclick = resetTank;
+
+window.addEventListener('keydown', e => {
+  if (e.key === ' '){ e.preventDefault(); addJelly(); }
+  if (e.key.toLowerCase() === 'n') nightBtn.click();
+  if (e.key.toLowerCase() === 'm') soundBtn.click();
+});
+
+setTimeout(() => { if (!hinted) hintEl.classList.add('gone'); }, 9000);
+
+/* ───────────────────────── loop ───────────────────────── */
+
+resetTank();
+
+let last = performance.now(), clock = 0;
+function frame(now){
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  clock += dt;
+
+  drawBackdrop(clock);
+
+  /* drifting dust */
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (const m of motes){
+    m.x += m.vx * dt; m.y += m.vy * dt;
+    if (m.x < -5) m.x = W + 5; if (m.x > W + 5) m.x = -5;
+    if (m.y < -5) m.y = H + 5; if (m.y > H + 5) m.y = -5;
+    ctx.fillStyle = `rgba(200,240,255,${m.a})`;
+    ctx.beginPath(); ctx.arc(m.x, m.y, m.r, 0, TAU); ctx.fill();
+  }
+  ctx.restore();
+
+  /* food */
+  for (const f of foods) if (!f.dead) f.update(dt);
+  for (const f of foods) if (!f.dead) f.draw();
+  foods = foods.filter(f => !f.dead);
+
+  /* jellies */
+  for (const j of jellies) j.update(dt, clock);
+  for (const j of jellies) j.draw(clock);
+
+  /* growing up → splitting into two */
+  const babies = [];
+  for (const j of jellies){
+    if (j.size >= 39 && jellies.length + babies.length < MAX_JELLIES){
+      j.size *= 0.6;
+      const b = new Jelly(j.x + rand(-12, 12), j.y + rand(-12, 12), j.size * .95, j.hue + rand(-22, 22));
+      babies.push(b);
+      burst(j.x, j.y, j.hue, 20);
+      tone(1318.5, .55, .07); tone(1760, .4, .04, .08);
+    }
+  }
+  if (babies.length){ jellies.push.apply(jellies, babies); updateStat(); }
+
+  /* sparkles */
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (const s of sparks){
+    s.life -= dt;
+    s.x += s.vx * dt; s.y += s.vy * dt;
+    s.vx *= Math.pow(.2, dt); s.vy = s.vy * Math.pow(.2, dt) + 14 * dt;
+    const a = Math.max(0, s.life / s.max);
+    ctx.fillStyle = `hsla(${s.hue},100%,85%,${a})`;
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r * a + .4, 0, TAU); ctx.fill();
+  }
+  ctx.restore();
+  sparks = sparks.filter(s => s.life > 0);
+
+  /* bubbles */
+  ctx.save();
+  ctx.strokeStyle = 'rgba(210,245,255,.32)';
+  ctx.lineWidth = 1;
+  for (const b of bubbles){
+    b.p += dt * 2;
+    b.y -= b.vy * dt;
+    b.x += Math.sin(b.p) * 9 * dt;
+    if (b.y < -10){ b.y = H + rand(0, 60); b.x = rand(0, W); }
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, TAU); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,.14)';
+    ctx.beginPath(); ctx.arc(b.x - b.r * .3, b.y - b.r * .3, b.r * .35, 0, TAU); ctx.fill();
+  }
+  ctx.restore();
+
+  drawVignette();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>
